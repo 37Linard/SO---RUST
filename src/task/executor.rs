@@ -56,6 +56,9 @@ impl Executor {
 
     pub fn run(&mut self) -> ! {
         loop {
+            for task in super::drain_pending_spawns() {
+                self.spawn(task);
+            }
             self.run_ready_tasks();
             self.sleep_if_idle();
         }

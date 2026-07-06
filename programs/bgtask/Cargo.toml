@@ -1,0 +1,15 @@
+[package]
+name = "bgtask"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "bgtask"
+test = false
+bench = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

@@ -1,0 +1,15 @@
+[package]
+name = "looper_b"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "looper_b"
+test = false
+bench = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

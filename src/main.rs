@@ -8,21 +8,37 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
 mod allocator;
+mod ata;
 mod desktop;
+mod elf;
+mod font8x8;
 mod framebuffer;
 mod fs;
 mod gdt;
+mod gui_console;
 mod interrupts;
 mod memory;
 mod mouse;
+mod net;
+mod pci;
+mod process;
+mod rtl8139;
 mod serial;
+mod shell;
 mod syscall;
 mod task;
-mod usermode;
 mod vga_buffer;
+
+use task::{executor::Executor, Task};
+
+/// Offset de memoria fisica do bootloader, guardado aqui pro comando `gui`
+/// do shell (`shell.rs`) conseguir chamar `draw_desktop()` -- so' existia
+/// local em `kernel_main` antes (Fase 20).
+static PHYS_MEM_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 entry_point!(kernel_main);
 
@@ -42,6 +58,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     x86_64::instructions::interrupts::enable();
     println!("Interrupcoes de hardware ativas.");
 
+    PHYS_MEM_OFFSET.store(boot_info.physical_memory_offset, Ordering::Relaxed);
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
     let mut mapper = unsafe { memory::init(phys_mem_offset) };
     let mut frame_allocator = unsafe { memory::BootInfoFrameAllocator::init(&boot_info.memory_map) };
@@ -58,38 +75,34 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
     println!("vec em {:p}, len={}", vec.as_slice(), vec.len());
 
-    test_syscall();
     test_fs();
-    draw_desktop(boot_info.physical_memory_offset);
+    install_programs();
+    *process::KERNEL_MEMORY.lock() = Some((mapper, frame_allocator));
 
-    println!("Saltando para ring3 (userland real)...");
-    serial_println!("CHECKPOINT: prestes a executar iretq para ring3");
-    usermode::jump_to_usermode(&mut mapper);
+    println!("Shell pronto. Digite 'help' pra ver comandos. Binarios instalados: 'hello'.");
+    let mut executor = Executor::new();
+    executor.spawn(Task::new(shell::run()));
+    executor.run();
 }
 
-fn test_syscall() {
-    let msg = "syscall SYS_WRITE funcionando!\n";
-    let mut rax = syscall::SYS_WRITE;
-    unsafe {
-        core::arch::asm!(
-            "int 0x80",
-            inout("rax") rax,
-            in("rdi") msg.as_ptr() as u64,
-            in("rsi") msg.len() as u64,
-        );
-    }
-    println!("syscall SYS_WRITE retornou {} bytes", rax);
+/// Binarios "instalados" no RAM-disk no boot -- sem driver de disco ainda,
+/// entao o ELF compilado em `programs/hello` (build separado, ver README)
+/// e embutido direto no binario do kernel.
+fn install_programs() {
+    let hello_elf: &[u8] = include_bytes!("../programs/hello/target/x86_64-meu_os/release/hello");
+    fs::FS.lock().create("hello", hello_elf);
 
-    unsafe {
-        core::arch::asm!(
-            "int 0x80",
-            in("rax") syscall::SYS_EXIT,
-            in("rdi") 0u64,
-        );
-    }
+    let bgtask_elf: &[u8] =
+        include_bytes!("../programs/bgtask/target/x86_64-meu_os/release/bgtask");
+    fs::FS.lock().create("bgtask", bgtask_elf);
 }
 
-fn draw_desktop(physical_memory_offset: u64) {
+/// Ativa o modo grafico (VGA 320x200) e desenha o compositor multi-janela
+/// (Fase 20) -- chamado pelo comando `gui` do shell. Mudanca visual so' de
+/// ida: o buffer de texto (0xb8000) para de aparecer, mas o shell continua
+/// rodando por baixo (aceita comandos, so' nao da pra ver o prompt).
+pub fn draw_desktop() {
+    let physical_memory_offset = PHYS_MEM_OFFSET.load(Ordering::Relaxed);
     desktop::setup_palette();
     desktop::init(framebuffer::Framebuffer::new(physical_memory_offset));
     println!("Tela de trabalho desenhada (VGA modo 13h, 320x200).");
