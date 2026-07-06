@@ -1,0 +1,29 @@
+[package]
+name = "meu-os"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bootloader = { version = "0.9.23", features = ["map_physical_memory", "vga_320x200"] }
+volatile = "0.2.6"
+spin = "0.5.2"
+x86_64 = { version = "0.14.2", default-features = false, features = ["instructions", "abi_x86_interrupt", "const_fn"] }
+uart_16550 = "0.2.0"
+pic8259 = "0.10.1"
+pc-keyboard = "0.5.0"
+lazy_static = { version = "1.0", features = ["spin_no_std"] }
+linked_list_allocator = "0.10"
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+conquer-once = { version = "0.3", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+
+[[bin]]
+name = "meu-os"
+test = false
+bench = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
