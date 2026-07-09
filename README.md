@@ -166,3 +166,5 @@ Ideias futuras: DHCP (hoje IP fixo), TCP com múltiplas conexões/retransmissão
 - [Writing an OS in Rust](https://os.phil-opp.com/) — Philipp Oppermann
 - [OSDev Wiki](https://wiki.osdev.org/)
 - [xv6](https://github.com/mit-pdos/xv6-public) — teaching OS do MIT
+#   p h i s h i n g - d e t e c t o r  
+ 
