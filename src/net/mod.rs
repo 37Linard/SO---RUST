@@ -1,4 +1,5 @@
 pub mod arp;
+pub mod dhcp;
 pub mod eth;
 pub mod icmp;
 pub mod ipv4;
@@ -12,10 +13,22 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use spin::Mutex;
 
-/// Endereco fixo do modo `user`/SLIRP do QEMU -- sem cliente DHCP (fora de
-/// escopo, ver plano da Fase 23). So' funciona se o QEMU estiver usando a
-/// rede padrao (10.0.2.0/24) -- documentado no README.
-pub const OUR_IP: [u8; 4] = [10, 0, 2, 15];
+pub const BROADCAST_IP: [u8; 4] = [255, 255, 255, 255];
+pub const BROADCAST_MAC: [u8; 6] = [0xff; 6];
+
+/// IP atual da interface. Comeca no endereco fixo do modo `user`/SLIRP do
+/// QEMU (compatibilidade com o que ja funcionava antes do cliente DHCP) --
+/// o comando `dhcp` no shell troca esse valor por um IP de verdade recebido
+/// de um servidor DHCP (ver `dhcp.rs`).
+static OUR_IP: Mutex<[u8; 4]> = Mutex::new([10, 0, 2, 15]);
+
+pub fn our_ip() -> [u8; 4] {
+    *OUR_IP.lock()
+}
+
+fn set_our_ip(ip: [u8; 4]) {
+    *OUR_IP.lock() = ip;
+}
 
 /// Porta UDP do servidor de eco (Fase 24) -- qualquer datagrama recebido
 /// aqui volta identico pro remetente, mesma ideia do responder de ICMP.
@@ -49,6 +62,13 @@ static TCP_CONNECTION: Mutex<Option<TcpConnection>> = Mutex::new(None);
 /// ICMP/UDP/etc) e manda pro fio -- reaproveitado por `handle_ipv4`
 /// (ICMP) e `handle_udp` pra nao duplicar o "framing" duas vezes.
 fn send_ipv4_packet(dst_mac: [u8; 6], dst_ip: [u8; 4], protocol: u8, payload: &[u8]) {
+    send_ipv4_packet_from(our_ip(), dst_mac, dst_ip, protocol, payload);
+}
+
+/// Mesma coisa que `send_ipv4_packet`, mas com IP de origem explicito --
+/// usado pelo DHCP (`dhcp.rs`) pra mandar DISCOVER/REQUEST com origem
+/// `0.0.0.0` antes de ter um IP de verdade (RFC 2131).
+fn send_ipv4_packet_from(src_ip: [u8; 4], dst_mac: [u8; 6], dst_ip: [u8; 4], protocol: u8, payload: &[u8]) {
     let Some(our_mac) = rtl8139::mac_address() else {
         return;
     };
@@ -61,7 +81,7 @@ fn send_ipv4_packet(dst_mac: [u8; 6], dst_ip: [u8; 4], protocol: u8, payload: &[
     .write(&mut out);
     ipv4::Ipv4Header {
         protocol,
-        src: OUR_IP,
+        src: src_ip,
         dst: dst_ip,
         payload_len: payload.len(),
     }
@@ -86,7 +106,7 @@ fn handle_arp(payload: &[u8]) {
     let Some(request) = arp::ArpPacket::parse(payload) else {
         return;
     };
-    if request.oper != arp::OPER_REQUEST || request.target_ip != OUR_IP {
+    if request.oper != arp::OPER_REQUEST || request.target_ip != our_ip() {
         return;
     }
     let Some(our_mac) = rtl8139::mac_address() else {
@@ -96,7 +116,7 @@ fn handle_arp(payload: &[u8]) {
     let reply = arp::ArpPacket {
         oper: arp::OPER_REPLY,
         sender_mac: our_mac,
-        sender_ip: OUR_IP,
+        sender_ip: our_ip(),
         target_mac: request.sender_mac,
         target_ip: request.sender_ip,
     };
@@ -116,7 +136,9 @@ fn handle_ipv4(header: &eth::EthHeader, payload: &[u8]) {
     let Some((ip, ihl)) = ipv4::Ipv4Header::parse(payload) else {
         return;
     };
-    if ip.dst != OUR_IP || ihl + ip.payload_len > payload.len() {
+    // Aceita unicast pro nosso IP atual e broadcast (respostas de DHCP
+    // chegam em broadcast enquanto ainda nao temos IP configurado).
+    if (ip.dst != our_ip() && ip.dst != BROADCAST_IP) || ihl + ip.payload_len > payload.len() {
         return;
     }
     let body = &payload[ihl..ihl + ip.payload_len];
@@ -145,6 +167,10 @@ fn handle_udp(header: &eth::EthHeader, ip: &ipv4::Ipv4Header, body: &[u8]) {
     let Some(datagram) = udp::UdpDatagram::parse(body) else {
         return;
     };
+    if datagram.dst_port == dhcp::CLIENT_PORT {
+        dhcp::handle_packet(datagram.payload);
+        return;
+    }
     if datagram.dst_port != UDP_ECHO_PORT {
         return;
     }
@@ -169,7 +195,7 @@ fn send_tcp(dst_mac: [u8; 6], dst_ip: [u8; 4], dst_port: u16, seq: u32, ack: u32
         window: 8192,
     };
     let mut tcp_out = Vec::new();
-    header.write(OUR_IP, dst_ip, payload, &mut tcp_out);
+    header.write(our_ip(), dst_ip, payload, &mut tcp_out);
     send_ipv4_packet(dst_mac, dst_ip, ipv4::PROTO_TCP, &tcp_out);
 }
 

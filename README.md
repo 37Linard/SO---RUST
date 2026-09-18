@@ -24,6 +24,7 @@ Sistema operacional escrito do zero em Rust, alvo x86_64. Kernel bare-metal (`no
 - **Fonte bitmap 8x8** — fonte própria (espaço, dígitos, maiúsculas, `+-:.$`), usada nos títulos das janelas e no botão "+" da barra de tarefas (`src/font8x8.rs`)
 - **Shell dentro da janela gráfica** — `vga_buffer.rs` vira camada de redirecionamento (`print!`/`println!`/edição de linha) entre a VGA texto e um console gráfico novo (`src/gui_console.rs`) desenhado numa janela do compositor — o mesmo shell (`src/shell.rs`, sem nenhuma mudança de lógica) passa a rodar dentro da GUI assim que o comando `gui` liga o modo gráfico
 - **Rede** — driver rtl8139 real (`src/rtl8139.rs`, PCI via `src/pci.rs`, polling sem interrupção) + Ethernet/ARP/IPv4/ICMP/UDP/TCP feitos à mão (`src/net/`) — comando `net` no shell responde ARP, ping (ICMP echo), servidor de eco UDP (porta 7777) e servidor de eco TCP (porta 7778, handshake + dados + fechamento real, uma conexão por vez), task assíncrona rodando junto com o shell (mesmo padrão de `process::BackgroundTask`)
+- **Cliente DHCP** — DISCOVER/OFFER/REQUEST/ACK (RFC 2131) sobre broadcast, IP da interface passa a ser mutável (antes fixo em `10.0.2.15`) e é atualizado quando o lease chega (`src/net/dhcp.rs`). Comando `dhcp` no shell (precisa do `net` já iniciado) — sem renovação de lease/timeout/retransmissão, um pedido só
 - **Edição de linha no shell** — setas esquerda/direita movem o cursor de verdade (cursor de hardware da VGA via CRTC), setas cima/baixo navegam o histórico de comandos (`src/shell.rs`, `src/vga_buffer.rs`)
 
 ## Requisitos
@@ -100,7 +101,7 @@ Precisa de uma placa de rede emulada (rtl8139) conectada ao QEMU:
 qemu-system-x86_64 -drive format=raw,file=target\x86_64-meu_os\debug\bootimage-meu-os.bin -drive file=disk.img,format=raw,index=1,media=disk -netdev user,id=net0 -device rtl8139,netdev=net0
 ```
 
-No shell, `net` inicializa o driver (IP fixo `10.0.2.15`, dentro da faixa padrão do modo `user`/SLIRP do QEMU) e começa a responder ARP, ping (ICMP echo) e um servidor de eco UDP na porta 7777 em background.
+No shell, `net` inicializa o driver (IP fixo `10.0.2.15` por padrão, dentro da faixa padrão do modo `user`/SLIRP do QEMU) e começa a responder ARP, ping (ICMP echo) e um servidor de eco UDP na porta 7777 em background. Rodando `dhcp` em seguida troca esse IP fixo por um de verdade, obtido do servidor DHCP do SLIRP.
 
 **ICMP (ping)**: o modo `user`/SLIRP do QEMU não encaminha tráfego não solicitado do host pro guest (`ping 10.0.2.15` a partir do host não chega — nem chega a sair da rede real do host, já que `10.0.2.0/24` só existe dentro do processo do QEMU) — verificado com um "probe" que o próprio guest manda (ARP request pro gateway `10.0.2.2`, que responde de verdade) e com um auto-teste que injeta um echo request falso direto no responder, sem depender de rede real.
 
@@ -113,6 +114,8 @@ qemu-system-x86_64 ... -netdev user,id=net0,hostfwd=udp::7777-:7777 -device rtl8
 Com o kernel rodando e `net` já iniciado, mandar um datagrama UDP pra `127.0.0.1:7777` do host faz o guest ecoar de volta o mesmo conteúdo — prova real de conectividade host↔guest, sem precisar de rede `tap`.
 
 **TCP (eco)**: mesma ideia, com `hostfwd=tcp::7778-:7778`. Um `TcpClient`/`nc`/telnet real do host consegue abrir conexão de verdade (handshake completo), mandar dados (ecoados de volta) e fechar — servidor aceita 1 conexão por vez, sem retransmissão/timeout (prova de conceito de handshake+dados+fechamento, não uma stack TCP completa).
+
+**DHCP**: com `net` já rodando, o comando `dhcp` manda um DISCOVER em broadcast; o servidor DHCP embutido no modo `user`/SLIRP do QEMU responde (OFFER → REQUEST → ACK) e o shell imprime o IP obtido (tipicamente `10.0.2.15`, a mesma faixa do IP fixo anterior). Testado direto pela porta serial (`serial_println!`), já que roda antes de qualquer inspeção visual.
 
 ## Arquitetura
 
@@ -140,7 +143,7 @@ src/
 ├── desktop.rs           compositor multi-janela (backing-store, arrastar/focar/minimizar/fechar, janela terminal)
 ├── pci.rs               enumeracao de barramento PCI (portas 0xCF8/0xCFC)
 ├── rtl8139.rs           driver da placa de rede (PIO/DMA por polling, sem IRQ)
-├── net/                 Ethernet, ARP, IPv4, ICMP, UDP, TCP (serializacao manual) + task de polling
+├── net/                 Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP (serializacao manual) + task de polling
 └── serial.rs            saida serial (debug via porta COM1)
 ```
 
@@ -157,14 +160,12 @@ qemu-system-x86_64 -drive format=raw,file=<imagem> -serial file:serial.log -moni
 
 ## Status
 
-Roadmap original completo (boot → userland/ring3) + todos os itens extras planejados: tela gráfica, mouse, compositor multi-janela com títulos de texto real, fonte bitmap 8x8, shell rodando dentro da janela gráfica, shell interativo com edição de linha/histórico, ELF loader, demo de multitarefa preemptiva real, processos em background integrados ao shell com `ps`/`kill`, filesystem persistente em disco (ATA PIO), driver de rede (rtl8139) com ARP/ICMP/UDP/TCP (handshake + eco + fechamento reais).
+Roadmap original completo (boot → userland/ring3) + todos os itens extras planejados: tela gráfica, mouse, compositor multi-janela com títulos de texto real, fonte bitmap 8x8, shell rodando dentro da janela gráfica, shell interativo com edição de linha/histórico, ELF loader, demo de multitarefa preemptiva real, processos em background integrados ao shell com `ps`/`kill`, filesystem persistente em disco (ATA PIO), driver de rede (rtl8139) com ARP/ICMP/UDP/TCP (handshake + eco + fechamento reais) e cliente DHCP (DISCOVER/OFFER/REQUEST/ACK).
 
-Ideias futuras: DHCP (hoje IP fixo), TCP com múltiplas conexões/retransmissão de verdade, rede `tap` pra testar ICMP de fora do host de verdade (UDP/TCP já dão, via `hostfwd`).
+Ideias futuras: renovação de lease DHCP (hoje um pedido só, sem timeout/retransmissão), TCP com múltiplas conexões/retransmissão de verdade, rede `tap` pra testar ICMP de fora do host de verdade (UDP/TCP já dão, via `hostfwd`).
 
 ## Referências
 
 - [Writing an OS in Rust](https://os.phil-opp.com/) — Philipp Oppermann
 - [OSDev Wiki](https://wiki.osdev.org/)
 - [xv6](https://github.com/mit-pdos/xv6-public) — teaching OS do MIT
-#   p h i s h i n g - d e t e c t o r  
- 

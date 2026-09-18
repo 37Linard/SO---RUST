@@ -1,6 +1,6 @@
 use crate::task::keyboard::ScancodeStream;
 use crate::task::Task;
-use crate::{fs, print, println, process, task, vga_buffer};
+use crate::{fs, print, println, process, serial_println, task, vga_buffer};
 use alloc::string::String;
 use alloc::vec::Vec;
 use futures_util::stream::StreamExt;
@@ -192,6 +192,13 @@ impl Shell {
                 vga_buffer::enable_gui_mode();
             }
             "net" => self.run_net_init(),
+            "dhcp" => match crate::net::dhcp::start() {
+                Ok(()) => {
+                    println!("dhcp: DISCOVER enviado, aguardando resposta...");
+                    serial_println!("dhcp: DISCOVER enviado, aguardando resposta...");
+                }
+                Err(e) => println!("erro ao iniciar dhcp: {}", e),
+            },
             _ => self.run_program(&cmd),
         }
     }
@@ -203,10 +210,11 @@ impl Shell {
     fn run_net_init(&mut self) {
         match crate::rtl8139::init() {
             Ok(mac) => {
+                let ip = crate::net::our_ip();
                 println!(
                     "rtl8139 inicializado: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, IP {}.{}.{}.{}",
                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-                    crate::net::OUR_IP[0], crate::net::OUR_IP[1], crate::net::OUR_IP[2], crate::net::OUR_IP[3]
+                    ip[0], ip[1], ip[2], ip[3]
                 );
                 task::queue_spawn(Task::new(crate::net::NetPollTask));
                 println!(
