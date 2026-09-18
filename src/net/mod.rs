@@ -53,10 +53,11 @@ struct TcpConnection {
     peer_seq: u32,
 }
 
-/// Uma conexao TCP por vez (mesmo espirito de "uma coisa de cada vez" ja
-/// usado em outras partes do projeto -- terminal unico, processo em
-/// foreground unico). Um SYN novo sempre substitui a conexao atual.
-static TCP_CONNECTION: Mutex<Option<TcpConnection>> = Mutex::new(None);
+/// Varias conexoes TCP simultaneas na mesma porta de escuta, uma entrada
+/// por peer (`peer_ip`+`peer_port`) -- sem limite de tamanho nem timeout de
+/// conexoes penduradas (ex. peer que nunca manda FIN), ver `ponytail` no
+/// handler de FIN mais abaixo pra limpeza real.
+static TCP_CONNECTIONS: Mutex<Vec<TcpConnection>> = Mutex::new(Vec::new());
 
 /// Monta Ethernet + IPv4 em volta de um payload ja pronto (corpo de
 /// ICMP/UDP/etc) e manda pro fio -- reaproveitado por `handle_ipv4`
@@ -199,10 +200,11 @@ fn send_tcp(dst_mac: [u8; 6], dst_ip: [u8; 4], dst_port: u16, seq: u32, ack: u32
     send_ipv4_packet(dst_mac, dst_ip, ipv4::PROTO_TCP, &tcp_out);
 }
 
-/// Servidor de eco TCP (Fase 25): aceita 1 conexao por vez (handshake de
-/// 3 vias), ecoa qualquer dado recebido enquanto ESTABLISHED, fecha
-/// graciosamente quando o peer manda FIN -- sem retransmissao/timeout,
-/// prova de conceito de handshake+dados+fechamento, nao stack completa.
+/// Servidor de eco TCP (Fase 25): varias conexoes simultaneas na mesma
+/// porta de escuta (handshake de 3 vias por peer), ecoa qualquer dado
+/// recebido enquanto ESTABLISHED, fecha graciosamente quando o peer manda
+/// FIN -- sem retransmissao/timeout, prova de conceito de handshake mais
+/// eco mais fechamento por conexao, nao uma stack completa.
 fn handle_tcp(header: &eth::EthHeader, ip: &ipv4::Ipv4Header, body: &[u8]) {
     let Some((tcp_hdr, data_offset)) = tcp::TcpHeader::parse(body) else {
         return;
@@ -216,7 +218,10 @@ fn handle_tcp(header: &eth::EthHeader, ip: &ipv4::Ipv4Header, body: &[u8]) {
     if is_new_syn {
         let our_isn: u32 = 1000;
         let peer_seq = tcp_hdr.seq.wrapping_add(1);
-        *TCP_CONNECTION.lock() = Some(TcpConnection {
+        let mut connections = TCP_CONNECTIONS.lock();
+        // Um SYN novo do mesmo peer sempre substitui a conexao anterior dele.
+        connections.retain(|c| c.peer_ip != ip.src || c.peer_port != tcp_hdr.src_port);
+        connections.push(TcpConnection {
             state: TcpState::SynReceived,
             peer_mac: header.src_mac,
             peer_ip: ip.src,
@@ -224,6 +229,7 @@ fn handle_tcp(header: &eth::EthHeader, ip: &ipv4::Ipv4Header, body: &[u8]) {
             our_seq: our_isn.wrapping_add(1), // o SYN que mandamos consome 1 numero de sequencia
             peer_seq,
         });
+        drop(connections);
         send_tcp(
             header.src_mac,
             ip.src,
@@ -236,13 +242,11 @@ fn handle_tcp(header: &eth::EthHeader, ip: &ipv4::Ipv4Header, body: &[u8]) {
         return;
     }
 
-    let mut guard = TCP_CONNECTION.lock();
-    let Some(conn) = guard.as_mut() else {
+    let mut guard = TCP_CONNECTIONS.lock();
+    let Some(idx) = guard.iter().position(|c| c.peer_ip == ip.src && c.peer_port == tcp_hdr.src_port) else {
         return;
     };
-    if conn.peer_ip != ip.src || conn.peer_port != tcp_hdr.src_port {
-        return;
-    }
+    let conn = &mut guard[idx];
 
     match conn.state {
         TcpState::SynReceived if tcp_hdr.flags & tcp::FLAG_ACK != 0 => {
@@ -266,8 +270,7 @@ fn handle_tcp(header: &eth::EthHeader, ip: &ipv4::Ipv4Header, body: &[u8]) {
             send_tcp(peer_mac, peer_ip, peer_port, our_seq, peer_seq, tcp::FLAG_ACK | tcp::FLAG_PSH, payload);
         }
         TcpState::LastAck if tcp_hdr.flags & tcp::FLAG_ACK != 0 => {
-            drop(guard);
-            *TCP_CONNECTION.lock() = None;
+            guard.remove(idx);
         }
         _ => {}
     }

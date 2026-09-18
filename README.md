@@ -113,7 +113,7 @@ qemu-system-x86_64 ... -netdev user,id=net0,hostfwd=udp::7777-:7777 -device rtl8
 
 Com o kernel rodando e `net` já iniciado, mandar um datagrama UDP pra `127.0.0.1:7777` do host faz o guest ecoar de volta o mesmo conteúdo — prova real de conectividade host↔guest, sem precisar de rede `tap`.
 
-**TCP (eco)**: mesma ideia, com `hostfwd=tcp::7778-:7778`. Um `TcpClient`/`nc`/telnet real do host consegue abrir conexão de verdade (handshake completo), mandar dados (ecoados de volta) e fechar — servidor aceita 1 conexão por vez, sem retransmissão/timeout (prova de conceito de handshake+dados+fechamento, não uma stack TCP completa).
+**TCP (eco)**: mesma ideia, com `hostfwd=tcp::7778-:7778`. Um `TcpClient`/`nc`/telnet real do host consegue abrir conexão de verdade (handshake completo), mandar dados (ecoados de volta) e fechar — servidor aceita várias conexões simultâneas (uma entrada por peer numa tabela, não mais um slot único), sem retransmissão/timeout (prova de conceito de handshake+dados+fechamento por conexão, não uma stack TCP completa). Testado com duas conexões concorrentes de verdade, cada uma ecoando seu próprio conteúdo sem misturar.
 
 **DHCP**: com `net` já rodando, o comando `dhcp` manda um DISCOVER em broadcast; o servidor DHCP embutido no modo `user`/SLIRP do QEMU responde (OFFER → REQUEST → ACK) e o shell imprime o IP obtido (tipicamente `10.0.2.15`, a mesma faixa do IP fixo anterior). Testado direto pela porta serial (`serial_println!`), já que roda antes de qualquer inspeção visual.
 
@@ -160,9 +160,9 @@ qemu-system-x86_64 -drive format=raw,file=<imagem> -serial file:serial.log -moni
 
 ## Status
 
-Roadmap original completo (boot → userland/ring3) + todos os itens extras planejados: tela gráfica, mouse, compositor multi-janela com títulos de texto real, fonte bitmap 8x8, shell rodando dentro da janela gráfica, shell interativo com edição de linha/histórico, ELF loader, demo de multitarefa preemptiva real, processos em background integrados ao shell com `ps`/`kill`, filesystem persistente em disco (ATA PIO), driver de rede (rtl8139) com ARP/ICMP/UDP/TCP (handshake + eco + fechamento reais) e cliente DHCP (DISCOVER/OFFER/REQUEST/ACK).
+Roadmap original completo (boot → userland/ring3) + todos os itens extras planejados: tela gráfica, mouse, compositor multi-janela com títulos de texto real, fonte bitmap 8x8, shell rodando dentro da janela gráfica, shell interativo com edição de linha/histórico, ELF loader, demo de multitarefa preemptiva real, processos em background integrados ao shell com `ps`/`kill`, filesystem persistente em disco (ATA PIO), driver de rede (rtl8139) com ARP/ICMP/UDP/TCP (handshake + eco + fechamento reais, múltiplas conexões simultâneas) e cliente DHCP (DISCOVER/OFFER/REQUEST/ACK).
 
-Ideias futuras: renovação de lease DHCP (hoje um pedido só, sem timeout/retransmissão), TCP com múltiplas conexões/retransmissão de verdade, rede `tap` pra testar ICMP de fora do host de verdade (UDP/TCP já dão, via `hostfwd`).
+Ideias futuras: renovação de lease DHCP (hoje um pedido só, sem timeout/retransmissão), retransmissão/timeout de verdade no TCP (hoje sem RTO — segmento perdido fica sem resposta), limite/expiração de conexões TCP penduradas (hoje sem cap, um peer que nunca fecha ocupa a tabela pra sempre), rede `tap` pra testar ICMP de fora do host de verdade (UDP/TCP já dão, via `hostfwd`).
 
 ## Referências
 
